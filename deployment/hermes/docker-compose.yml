@@ -1,13 +1,13 @@
 # Microsoft Graph MCP Server - Docker Compose Configuration
-# Deploy to: /opt/services/ms-graph-mcp/docker-compose.yml on Hermes
+# Deploy to: /opt/services/m365-mcp/docker-compose.yml on Hermes
 #
 # Deployment:
 #   ./scripts/deploy-to-hermes.sh
 #
 # Manual deployment:
-#   rsync -av src/ hermes:/opt/services/ms-graph-mcp/src/ --exclude __pycache__
-#   scp deployment/hermes/docker-compose.yml hermes:/opt/services/ms-graph-mcp/
-#   ssh hermes 'cd /opt/services/ms-graph-mcp && docker compose up -d'
+#   rsync -av src/ hermes:/opt/services/m365-mcp/code/ --exclude __pycache__
+#   scp deployment/hermes/docker-compose.yml hermes:/opt/services/m365-mcp/
+#   ssh hermes 'cd /opt/services/m365-mcp && docker compose up -d'
 
 services:
   m365-mcp:
@@ -18,11 +18,11 @@ services:
     ports:
       - "10.100.0.1:8000:8000"  # WireGuard interface only
     volumes:
-      - ./src:/app
+      - ./code:/app
       - m365-mcp-data:/data
     working_dir: /app
     env_file:
-      - .env
+      - code/.env
     environment:
       - ALLOW_UNENCRYPTED_CACHE=true
       - ATHENA_DATA_DIR=/data

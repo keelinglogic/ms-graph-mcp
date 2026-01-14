@@ -13,7 +13,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 REMOTE_HOST="hermes"
-REMOTE_PATH="/opt/services/ms-graph-mcp"
+REMOTE_PATH="/opt/services/m365-mcp"
 
 # Colors for output
 RED='\033[0;31m'
@@ -42,7 +42,7 @@ fi
 echo -e "${YELLOW}Syncing source code...${NC}"
 rsync -av --delete \
     "$REPO_ROOT/src/" \
-    "$REMOTE_HOST:$REMOTE_PATH/src/" \
+    "$REMOTE_HOST:$REMOTE_PATH/code/" \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude '.env'
