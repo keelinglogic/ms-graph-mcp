@@ -1,12 +1,8 @@
 """
 Microsoft Graph Email MCP Server - Native FastMCP Implementation
 Exposes Microsoft 365 email access as MCP tools for Claude Code via HTTP
-"""
 
-# [Keep all imports and existing code up to line 593 - everything before "# Run server"]
-"""
-Microsoft Graph Email MCP Server (v2 with HTTP Transport)
-Exposes Microsoft 365 email access as MCP tools for Claude Code via HTTP
+Version: 2.1.0 (2026-01-16) - Deployment test from ms-graph-mcp repo
 """
 
 import asyncio
