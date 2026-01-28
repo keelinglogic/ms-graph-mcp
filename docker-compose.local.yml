@@ -1,0 +1,33 @@
+# Microsoft Graph MCP Server - Local Mac Deployment
+# Run: docker compose -f docker-compose.local.yml up -d
+
+services:
+  m365-mcp:
+    image: python:3.12-slim
+    container_name: m365-mcp-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"  # Localhost only
+    volumes:
+      - ./src:/app
+      - m365-mcp-data:/data
+    working_dir: /app
+    environment:
+      - CLIENT_ID=bcccb2b4-f3f0-4db9-bd2a-d979c15e08be
+      - TENANT_ID=7b43c6d1-9d23-4907-9dc4-82f7088ca99d
+      - ALLOW_UNENCRYPTED_CACHE=true
+      - ATHENA_DATA_DIR=/data
+      - HOME=/data
+      - PIP_CACHE_DIR=/data/.pip-cache
+      - PATH=/data/.local/bin:/usr/local/bin:/usr/bin:/bin
+    command: >
+      sh -c "
+        pip install -q --no-cache-dir -r requirements.txt &&
+        pip install -q --no-cache-dir mcp-proxy &&
+        mcp-proxy --port 8000 --host 0.0.0.0 python3 mcp_server_v2.py
+      "
+
+volumes:
+  m365-mcp-data:
+    name: m365-mcp-data
+    driver: local
