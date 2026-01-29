@@ -14,6 +14,7 @@ import base64
 import mimetypes
 from pathlib import Path
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Callable, TypeVar, Optional, List, Tuple, Dict
 from functools import wraps
 from dotenv import load_dotenv
@@ -103,7 +104,11 @@ load_dotenv(dotenv_path=env_path)
 
 CLIENT_ID = os.getenv('CLIENT_ID')
 TENANT_ID = os.getenv('TENANT_ID')
-SCOPES = os.getenv('SCOPES', 'User.Read Mail.Read').split()
+SCOPES = os.getenv('SCOPES', 'User.Read Mail.Read Mail.Send offline_access').split()
+
+# Display timezone for calendar events (IANA timezone name)
+# Converts event times from their stored timezone to this timezone for display
+MCP_MS_GRAPH_TIMEZONE = os.getenv('MCP_MS_GRAPH_TIMEZONE', 'UTC')
 
 # Validate required environment variables
 if not CLIENT_ID or not TENANT_ID:
@@ -5233,14 +5238,14 @@ async def delete_folder(
 
 def format_event_time(dt_tz: DateTimeTimeZone, is_all_day: bool = False) -> str:
     """
-    Format a DateTimeTimeZone object for display.
+    Format a DateTimeTimeZone object for display in MCP_MS_GRAPH_TIMEZONE.
 
     Args:
         dt_tz: DateTimeTimeZone object from Graph API
         is_all_day: Whether this is an all-day event
 
     Returns:
-        Formatted time string
+        Formatted time string in MCP_MS_GRAPH_TIMEZONE
     """
     if not dt_tz or not dt_tz.date_time:
         return "Unknown"
@@ -5248,7 +5253,7 @@ def format_event_time(dt_tz: DateTimeTimeZone, is_all_day: bool = False) -> str:
     try:
         # Parse the datetime string
         dt_str = dt_tz.date_time
-        tz_str = dt_tz.time_zone or "UTC"
+        source_tz_str = dt_tz.time_zone or "UTC"
 
         # Parse datetime (Graph API returns ISO format without timezone offset)
         if "T" in dt_str:
@@ -5258,11 +5263,15 @@ def format_event_time(dt_tz: DateTimeTimeZone, is_all_day: bool = False) -> str:
             dt = datetime.fromisoformat(dt_str)
 
         if is_all_day:
-            # All-day events: just show the date
+            # All-day events: just show the date (no timezone conversion needed)
             return dt.strftime("%a %d %b %Y")
         else:
-            # Regular events: show date and time
-            return dt.strftime("%a %d %b %Y, %H:%M")
+            # Convert from source timezone to display timezone
+            source_tz = ZoneInfo(source_tz_str)
+            display_tz = ZoneInfo(MCP_MS_GRAPH_TIMEZONE)
+            dt_with_tz = dt.replace(tzinfo=source_tz)
+            dt_local = dt_with_tz.astimezone(display_tz)
+            return dt_local.strftime("%a %d %b %Y, %H:%M")
 
     except Exception:
         return dt_tz.date_time or "Unknown"
@@ -5270,7 +5279,7 @@ def format_event_time(dt_tz: DateTimeTimeZone, is_all_day: bool = False) -> str:
 
 def format_event_time_range(start: DateTimeTimeZone, end: DateTimeTimeZone, is_all_day: bool = False) -> str:
     """
-    Format start and end times as a range.
+    Format start and end times as a range in MCP_MS_GRAPH_TIMEZONE.
 
     Args:
         start: Start DateTimeTimeZone
@@ -5278,7 +5287,7 @@ def format_event_time_range(start: DateTimeTimeZone, end: DateTimeTimeZone, is_a
         is_all_day: Whether this is an all-day event
 
     Returns:
-        Formatted time range string
+        Formatted time range string in MCP_MS_GRAPH_TIMEZONE
     """
     if is_all_day:
         return f"{format_event_time(start, True)} (all day)"
@@ -5286,14 +5295,20 @@ def format_event_time_range(start: DateTimeTimeZone, end: DateTimeTimeZone, is_a
     try:
         start_dt = datetime.fromisoformat(start.date_time.replace("Z", ""))
         end_dt = datetime.fromisoformat(end.date_time.replace("Z", ""))
-        tz = start.time_zone or "UTC"
+        source_tz_str = start.time_zone or "UTC"
+
+        # Convert from source timezone to display timezone
+        source_tz = ZoneInfo(source_tz_str)
+        display_tz = ZoneInfo(MCP_MS_GRAPH_TIMEZONE)
+        start_local = start_dt.replace(tzinfo=source_tz).astimezone(display_tz)
+        end_local = end_dt.replace(tzinfo=source_tz).astimezone(display_tz)
 
         # Same day: show date once with time range
-        if start_dt.date() == end_dt.date():
-            return f"{start_dt.strftime('%a %d %b %Y')}, {start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')} {tz}"
+        if start_local.date() == end_local.date():
+            return f"{start_local.strftime('%a %d %b %Y')}, {start_local.strftime('%H:%M')}-{end_local.strftime('%H:%M')} {MCP_MS_GRAPH_TIMEZONE}"
         else:
             # Different days: show both dates
-            return f"{start_dt.strftime('%a %d %b %Y %H:%M')} - {end_dt.strftime('%a %d %b %Y %H:%M')} {tz}"
+            return f"{start_local.strftime('%a %d %b %Y %H:%M')} - {end_local.strftime('%a %d %b %Y %H:%M')} {MCP_MS_GRAPH_TIMEZONE}"
 
     except Exception:
         return f"{format_event_time(start)} - {format_event_time(end)}"
@@ -5532,13 +5547,17 @@ async def list_calendar_events(
                 total_events += 1
                 subject = event.subject or "(No subject)"
 
-                # Time display
+                # Time display (with timezone conversion)
                 if event.is_all_day:
                     time_str = "(All day)"
                 else:
-                    start_time = datetime.fromisoformat(event.start.date_time.replace("Z", "")).strftime("%H:%M")
-                    end_time = datetime.fromisoformat(event.end.date_time.replace("Z", "")).strftime("%H:%M")
-                    time_str = f"{start_time}-{end_time}"
+                    # Convert times to display timezone
+                    source_tz_str = event.start.time_zone or "UTC"
+                    source_tz = ZoneInfo(source_tz_str)
+                    display_tz = ZoneInfo(MCP_MS_GRAPH_TIMEZONE)
+                    start_dt = datetime.fromisoformat(event.start.date_time.replace("Z", "")).replace(tzinfo=source_tz).astimezone(display_tz)
+                    end_dt = datetime.fromisoformat(event.end.date_time.replace("Z", "")).replace(tzinfo=source_tz).astimezone(display_tz)
+                    time_str = f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}"
 
                 lines.append(f"{time_str:14} {subject}")
 
@@ -7954,9 +7973,9 @@ async def create_calendar_event(
         else:
             new_event.is_all_day = False
             start_tz.date_time = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-            start_tz.time_zone = "Europe/London"  # Default timezone
+            start_tz.time_zone = MCP_MS_GRAPH_TIMEZONE  # Default timezone
             end_tz.date_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
-            end_tz.time_zone = "Europe/London"
+            end_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
 
         new_event.start = start_tz
         new_event.end = end_tz
@@ -8098,12 +8117,12 @@ async def create_meeting(
         # Set times
         start_tz = DateTimeTimeZone()
         start_tz.date_time = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        start_tz.time_zone = "Europe/London"
+        start_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
         new_event.start = start_tz
 
         end_tz = DateTimeTimeZone()
         end_tz.date_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        end_tz.time_zone = "Europe/London"
+        end_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
         new_event.end = end_tz
 
         # Parse attendees
@@ -8284,7 +8303,7 @@ async def update_calendar_event(
                 start_dt = datetime.fromisoformat(start_datetime)
                 start_tz = DateTimeTimeZone()
                 start_tz.date_time = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                start_tz.time_zone = "Europe/London"
+                start_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
                 update_event.start = start_tz
                 updated_fields.append("start time")
             except ValueError as ve:
@@ -8295,7 +8314,7 @@ async def update_calendar_event(
                 end_dt = datetime.fromisoformat(end_datetime)
                 end_tz = DateTimeTimeZone()
                 end_tz.date_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                end_tz.time_zone = "Europe/London"
+                end_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
                 update_event.end = end_tz
                 updated_fields.append("end time")
             except ValueError as ve:
@@ -8681,12 +8700,12 @@ async def propose_new_time(
         proposed_time = TimeSlot()
         start_tz = DateTimeTimeZone()
         start_tz.date_time = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        start_tz.time_zone = "Europe/London"
+        start_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
         proposed_time.start = start_tz
 
         end_tz = DateTimeTimeZone()
         end_tz.date_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        end_tz.time_zone = "Europe/London"
+        end_tz.time_zone = MCP_MS_GRAPH_TIMEZONE
         proposed_time.end = end_tz
 
         # Use tentatively accept with proposed new time
@@ -11190,6 +11209,371 @@ async def delete_planner_task(
 
         return (
             f"❌ Error deleting task: {error_type}\n\n"
+            f"Task ID: {task_id}\n"
+            f"Error: {error_msg}"
+        )
+
+
+@mcp.tool()
+async def add_planner_checklist_item(
+    task_id: str,
+    title: str,
+    is_checked: bool = False,
+    mailbox_id: str = "me"
+) -> str:
+    """
+    Add a checklist item to a Planner task.
+
+    Planner tasks can have checklists (subtasks) that can be checked off.
+    This function adds a new item to an existing task's checklist.
+
+    Args:
+        task_id: The task ID (from list_planner_tasks) - REQUIRED
+        title: The checklist item text - REQUIRED
+        is_checked: Whether the item starts as checked (default: False)
+        mailbox_id: User context ("me" or email address)
+
+    Returns:
+        Confirmation with the new checklist item details
+    """
+    import uuid
+
+    try:
+        token_data = load_token_cache()
+        if not token_data or not is_token_valid(token_data):
+            return (
+                f"❌ Authentication required\n\n"
+                f"Please call test_connection first to authenticate."
+            )
+
+        access_token = token_data['access_token']
+
+        async with httpx.AsyncClient() as http_client:
+            # Get task details (contains checklist and etag)
+            details_resp = await http_client.get(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=API_TIMEOUT
+            )
+
+            if details_resp.status_code == 404:
+                return f"❌ Task not found\n\nTask ID: {task_id}"
+
+            if details_resp.status_code != 200:
+                return f"❌ Error fetching task details\n\nStatus: {details_resp.status_code}\n{details_resp.text}"
+
+            details_data = details_resp.json()
+            details_etag = details_data.get("@odata.etag", "")
+
+            # Get existing checklist (may be None or empty dict)
+            # Note: Planner API requires @odata.type annotation for all checklist items
+            existing_checklist = {}
+            raw_checklist = details_data.get("checklist", {}) or {}
+            if hasattr(raw_checklist, "additional_data"):
+                raw_checklist = raw_checklist.additional_data or {}
+
+            for k, v in raw_checklist.items():
+                if k.startswith("@"):
+                    continue
+                # Ensure each item has the required @odata.type annotation
+                existing_checklist[k] = {
+                    "@odata.type": "#microsoft.graph.plannerChecklistItem",
+                    "isChecked": v.get("isChecked", False),
+                    "title": v.get("title", "")
+                }
+
+            # Generate new item ID and add to checklist
+            new_item_id = str(uuid.uuid4())
+            existing_checklist[new_item_id] = {
+                "@odata.type": "#microsoft.graph.plannerChecklistItem",
+                "isChecked": is_checked,
+                "title": title
+            }
+
+            # Patch task details with updated checklist
+            patch_resp = await http_client.patch(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "If-Match": details_etag
+                },
+                json={"checklist": existing_checklist},
+                timeout=API_TIMEOUT
+            )
+
+            if patch_resp.status_code == 412:
+                return (
+                    f"❌ Task was modified by someone else\n\n"
+                    f"Task ID: {task_id}\n"
+                    f"Please try again."
+                )
+
+            if patch_resp.status_code not in [200, 204]:
+                return f"❌ Error updating checklist\n\nStatus: {patch_resp.status_code}\n{patch_resp.text}"
+
+            status = "☑️" if is_checked else "☐"
+            return (
+                f"✅ Checklist item added!\n\n"
+                f"Task ID: `{task_id}`\n"
+                f"Item: {status} {title}\n"
+                f"Item ID: `{new_item_id}`\n\n"
+                f"Total checklist items: {len(existing_checklist)}"
+            )
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+
+        return (
+            f"❌ Error adding checklist item: {error_type}\n\n"
+            f"Task ID: {task_id}\n"
+            f"Error: {error_msg}"
+        )
+
+
+@mcp.tool()
+async def update_planner_checklist_item(
+    task_id: str,
+    item_id: str,
+    is_checked: bool = None,
+    title: str = "",
+    mailbox_id: str = "me"
+) -> str:
+    """
+    Update or toggle a checklist item in a Planner task.
+
+    Use this to check/uncheck items or update their text.
+
+    Args:
+        task_id: The task ID (from list_planner_tasks) - REQUIRED
+        item_id: The checklist item ID (from get_planner_task) - REQUIRED
+        is_checked: Set checked state (True/False), omit to toggle
+        title: New title text (optional, keeps existing if not provided)
+        mailbox_id: User context ("me" or email address)
+
+    Returns:
+        Updated checklist item details
+    """
+    try:
+        token_data = load_token_cache()
+        if not token_data or not is_token_valid(token_data):
+            return (
+                f"❌ Authentication required\n\n"
+                f"Please call test_connection first to authenticate."
+            )
+
+        access_token = token_data['access_token']
+
+        async with httpx.AsyncClient() as http_client:
+            # Get task details
+            details_resp = await http_client.get(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=API_TIMEOUT
+            )
+
+            if details_resp.status_code == 404:
+                return f"❌ Task not found\n\nTask ID: {task_id}"
+
+            if details_resp.status_code != 200:
+                return f"❌ Error fetching task details\n\nStatus: {details_resp.status_code}\n{details_resp.text}"
+
+            details_data = details_resp.json()
+            details_etag = details_data.get("@odata.etag", "")
+
+            # Get existing checklist with @odata.type annotations
+            existing_checklist = {}
+            raw_checklist = details_data.get("checklist", {}) or {}
+            if hasattr(raw_checklist, "additional_data"):
+                raw_checklist = raw_checklist.additional_data or {}
+
+            for k, v in raw_checklist.items():
+                if k.startswith("@"):
+                    continue
+                existing_checklist[k] = {
+                    "@odata.type": "#microsoft.graph.plannerChecklistItem",
+                    "isChecked": v.get("isChecked", False),
+                    "title": v.get("title", "")
+                }
+
+            # Find the item
+            if item_id not in existing_checklist:
+                available_ids = list(existing_checklist.keys())[:5]
+                return (
+                    f"❌ Checklist item not found\n\n"
+                    f"Item ID: {item_id}\n"
+                    f"Available IDs: {available_ids}"
+                )
+
+            current_item = existing_checklist[item_id]
+            current_checked = current_item.get("isChecked", False)
+            current_title = current_item.get("title", "")
+
+            # Determine new values
+            if is_checked is None:
+                # Toggle mode
+                new_checked = not current_checked
+            else:
+                new_checked = is_checked
+
+            new_title = title if title else current_title
+
+            # Update the item with @odata.type annotation
+            existing_checklist[item_id] = {
+                "@odata.type": "#microsoft.graph.plannerChecklistItem",
+                "isChecked": new_checked,
+                "title": new_title
+            }
+
+            # Patch task details
+            patch_resp = await http_client.patch(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "If-Match": details_etag
+                },
+                json={"checklist": existing_checklist},
+                timeout=API_TIMEOUT
+            )
+
+            if patch_resp.status_code == 412:
+                return (
+                    f"❌ Task was modified by someone else\n\n"
+                    f"Task ID: {task_id}\n"
+                    f"Please try again."
+                )
+
+            if patch_resp.status_code not in [200, 204]:
+                return f"❌ Error updating checklist\n\nStatus: {patch_resp.status_code}\n{patch_resp.text}"
+
+            old_status = "☑️" if current_checked else "☐"
+            new_status = "☑️" if new_checked else "☐"
+
+            return (
+                f"✅ Checklist item updated!\n\n"
+                f"Task ID: `{task_id}`\n"
+                f"Item ID: `{item_id}`\n\n"
+                f"Before: {old_status} {current_title}\n"
+                f"After: {new_status} {new_title}"
+            )
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+
+        return (
+            f"❌ Error updating checklist item: {error_type}\n\n"
+            f"Task ID: {task_id}\n"
+            f"Error: {error_msg}"
+        )
+
+
+@mcp.tool()
+async def delete_planner_checklist_item(
+    task_id: str,
+    item_id: str,
+    mailbox_id: str = "me"
+) -> str:
+    """
+    Delete a checklist item from a Planner task.
+
+    Args:
+        task_id: The task ID (from list_planner_tasks) - REQUIRED
+        item_id: The checklist item ID (from get_planner_task) - REQUIRED
+        mailbox_id: User context ("me" or email address)
+
+    Returns:
+        Confirmation of deletion
+    """
+    try:
+        token_data = load_token_cache()
+        if not token_data or not is_token_valid(token_data):
+            return (
+                f"❌ Authentication required\n\n"
+                f"Please call test_connection first to authenticate."
+            )
+
+        access_token = token_data['access_token']
+
+        async with httpx.AsyncClient() as http_client:
+            # Get task details
+            details_resp = await http_client.get(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=API_TIMEOUT
+            )
+
+            if details_resp.status_code == 404:
+                return f"❌ Task not found\n\nTask ID: {task_id}"
+
+            if details_resp.status_code != 200:
+                return f"❌ Error fetching task details\n\nStatus: {details_resp.status_code}\n{details_resp.text}"
+
+            details_data = details_resp.json()
+            details_etag = details_data.get("@odata.etag", "")
+
+            # Get existing checklist with @odata.type annotations
+            existing_checklist = {}
+            raw_checklist = details_data.get("checklist", {}) or {}
+            if hasattr(raw_checklist, "additional_data"):
+                raw_checklist = raw_checklist.additional_data or {}
+
+            for k, v in raw_checklist.items():
+                if k.startswith("@"):
+                    continue
+                existing_checklist[k] = {
+                    "@odata.type": "#microsoft.graph.plannerChecklistItem",
+                    "isChecked": v.get("isChecked", False),
+                    "title": v.get("title", "")
+                }
+
+            # Find and remove the item
+            if item_id not in existing_checklist:
+                return (
+                    f"❌ Checklist item not found\n\n"
+                    f"Item ID: {item_id}"
+                )
+
+            deleted_item = existing_checklist.pop(item_id)
+            deleted_title = deleted_item.get("title", "Untitled")
+
+            # Patch task details with item removed
+            patch_resp = await http_client.patch(
+                f"https://graph.microsoft.com/v1.0/planner/tasks/{task_id}/details",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                    "If-Match": details_etag
+                },
+                json={"checklist": existing_checklist},
+                timeout=API_TIMEOUT
+            )
+
+            if patch_resp.status_code == 412:
+                return (
+                    f"❌ Task was modified by someone else\n\n"
+                    f"Task ID: {task_id}\n"
+                    f"Please try again."
+                )
+
+            if patch_resp.status_code not in [200, 204]:
+                return f"❌ Error updating checklist\n\nStatus: {patch_resp.status_code}\n{patch_resp.text}"
+
+            return (
+                f"✅ Checklist item deleted!\n\n"
+                f"Task ID: `{task_id}`\n"
+                f"Deleted: {deleted_title}\n\n"
+                f"Remaining checklist items: {len(existing_checklist)}"
+            )
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+
+        return (
+            f"❌ Error deleting checklist item: {error_type}\n\n"
             f"Task ID: {task_id}\n"
             f"Error: {error_msg}"
         )
